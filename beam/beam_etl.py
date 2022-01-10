@@ -6,7 +6,8 @@ import pyarrow
 import pandas as pd
 from sqlalchemy import create_engine
 from datetime import datetime
-import mysql.connector
+import pymysql
+import pymysql.cursors
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -24,10 +25,11 @@ class QueryMySqlFn(beam.DoFn):
         self.config = server_configuration
 
     def start_bundle(self):
-        self.mydb = mysql.connector.connect(**self.config)
-        self.cursor = self.mydb.cursor()
+        self.mydb = pymysql.connect(
+            cursorclass=pymysql.cursors.DictCursor, **self.config)
 
     def process(self, query):
+        self.cursor = self.mydb.cursor()
         self.cursor.execute(query)
         for result in self.cursor:
             yield result
@@ -216,13 +218,13 @@ def run(last_timestamp, argv=None, save_main_session=True):
 
         # Save Original data from DB
         extracted_lines | 'SaveExtractedData' >> WriteToParquet(
-            file_path_prefix = "gs://gcp-analytic/extracted/bills/{}.parquet".format(
+            file_path_prefix="gs://gcp-analytic/extracted/bills/{}.parquet".format(
                 process_time),
-            schema = schema
+            schema=schema
         )
 
         # Extract items from each records.
-        items_lines=(
+        items_lines = (
             extracted_lines
             | 'DateFilter' >> (beam.Filter(
                 lambda element: "undefined" not in element['date'] and "null" not in element['date'])
@@ -233,22 +235,22 @@ def run(last_timestamp, argv=None, save_main_session=True):
             | 'AddTransformTime' >> beam.Map(lambda x: add_process_timestamp(x, column_name="transform_timestamp"))
         )
 
-        table_spec=bigquery.TableReference(
-            projectId = 'gcp-analytic',
-            datasetId = 'records',
-            tableId = 'record_items')
+        table_spec = bigquery.TableReference(
+            projectId='gcp-analytic',
+            datasetId='records',
+            tableId='record_items')
 
-        table_schema='bill_id:INTEGER, store_id:INTEGER, date:STRING, issuer:STRING, name:STRING, amount:FLOAT, unit:STRING, price:FLOAT, total:FLOAT, type:STRING, updated_at:TIMESTAMP, extracted_timestamp:TIMESTAMP, transform_timestamp:TIMESTAMP'
+        table_schema = 'bill_id:INTEGER, store_id:INTEGER, date:STRING, issuer:STRING, name:STRING, amount:FLOAT, unit:STRING, price:FLOAT, total:FLOAT, type:STRING, updated_at:TIMESTAMP, extracted_timestamp:TIMESTAMP, transform_timestamp:TIMESTAMP'
 
         items_lines | 'LoadBillItemsIntoWarehouse' >> beam.io.WriteToBigQuery(
             table_spec,
-            schema = table_schema,
-            write_disposition = beam.io.BigQueryDisposition.WRITE_APPEND,
-            create_disposition = beam.io.BigQueryDisposition.CREATE_IF_NEEDED)
+            schema=table_schema,
+            write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+            create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED)
 
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
-    last_timestamp=get_lastest_extracted()
+    last_timestamp = get_lastest_extracted()
 
     run(last_timestamp)
